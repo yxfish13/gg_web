@@ -38,9 +38,15 @@ npm run dev
 ├── src/app.ts        # 全部逻辑：数据契约 / 数据源抽象 / mock 层 / 布局 / 渲染 / 缩放 / 事件
 ├── index.html        # 页面骨架 + 样式，引用 dist/app.js
 ├── dist/             # 编译产物（gitignore，构建生成）
+├── doc/              # 文档：架构设计 + API 接入指南
 ├── tsconfig.json     # rootDir=src, outDir=dist, ES2020 module, strict
 └── package.json
 ```
+
+## 文档
+
+- [doc/architecture.md](./doc/architecture.md) — 框架设计：分层架构、数据流、核心数据结构、树布局与渲染管线。
+- [doc/api-integration.md](./doc/api-integration.md) — API 接入指南：如何实现 `TraceDataSource` 对接真实后端、数据契约字段说明、验证方式。
 
 ## 数据加载与对接真实系统
 
