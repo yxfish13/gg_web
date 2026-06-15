@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Test Suite Contamination Tracer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<style>
+/* ============================================================
+   设计令牌 (Design Tokens) — 深空霓虹 + 玻璃拟态
+   ============================================================ */
+:root {
+  --bg-0: #f4f6fb;
+  --bg-1: #eef1f7;
+  --bg-2: #ffffff;
+  --glass: #ffffff;
+  --glass-strong: #ffffff;
+  --stroke: #e3e8f0;
+  --stroke-bright: #b9c4d6;
+
+  --cyan: #2563eb;
+  --magenta: #db2777;
+  --pass: #16a34a;
+  --fail: #e11d48;
+  --active: #d97706;
+  --culprit: #ea580c;
+  --txt-0: #1e2533;
+  --txt-1: #5a6577;
+  --txt-2: #98a2b3;
+
+  --glow-cyan: 0 1px 3px rgba(37, 99, 235, 0.12);
+  --glow-pass: 0 1px 3px rgba(22, 163, 74, 0.14);
+  --glow-fail: 0 1px 3px rgba(225, 29, 72, 0.14);
+  --glow-culprit: 0 2px 10px rgba(234, 88, 12, 0.28);
+  --shadow-card: 0 1px 3px rgba(20, 30, 50, 0.06), 0 4px 14px rgba(20, 30, 50, 0.05);
+
+  --r-lg: 16px;
+  --r-md: 12px;
+  --r-sm: 8px;
+
+  --mono: "JetBrains Mono", "SF Mono", "Consolas", monospace;
+  --display: "Orbitron", "JetBrains Mono", monospace;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  background: var(--bg-0);
+  color: var(--txt-0);
+  font-family: var(--mono);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 背景极淡网格 */
+body::before {
+  content: "";
+  position: fixed; inset: 0;
+  background-image:
+    radial-gradient(circle, rgba(120, 140, 180, 0.05) 1px, transparent 1px);
+  background-size: 38px 38px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ============================================================
+   布局骨架
+   ============================================================ */
+#app {
+  position: relative; z-index: 1;
+  display: grid;
+  grid-template-rows: auto auto auto 1fr auto;
+  grid-template-columns: 1fr 330px;
+  grid-template-areas:
+    "header   header"
+    "summary  summary"
+    "timeline timeline"
+    "tree     detail"
+    "controls controls";
+  height: 100vh;
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+/* ---------- Header ---------- */
+.header {
+  grid-area: header;
+  display: flex; align-items: center; gap: 14px;
+}
+.brand { display: flex; align-items: center; gap: 11px; }
+.brand .logo {
+  width: 30px; height: 30px; border-radius: 8px;
+  display: grid; place-items: center;
+  background: linear-gradient(135deg, #eff4ff, #fdeef7);
+  border: 1px solid var(--stroke);
+  color: var(--cyan);
+  font-size: 16px;
+}
+.brand h1 {
+  font-family: var(--display);
+  font-size: 13px; font-weight: 900; letter-spacing: 1.5px;
+  color: var(--txt-0);
+}
+.brand .sub { font-size: 9px; color: var(--txt-2); letter-spacing: 1px; margin-top: 1px; }
+
+.header .spacer { flex: 1; }
+
+.scenario-tabs { display: flex; gap: 6px; }
+.scenario-tabs button {
+  font-family: var(--mono); font-size: 11px; letter-spacing: .5px;
+  color: var(--txt-1); cursor: pointer;
+  padding: 6px 12px; border-radius: var(--r-sm);
+  background: var(--glass); border: 1px solid var(--stroke);
+  transition: all .25s ease;
+}
+.scenario-tabs button:hover { color: var(--txt-0); border-color: var(--stroke-bright); }
+.scenario-tabs button.active {
+  color: #fff; font-weight: 700;
+  background: var(--cyan);
+  border-color: transparent;
+}
+
+/* 结论徽章 */
+.verdict {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 13px; border-radius: var(--r-sm);
+  font-size: 11px; letter-spacing: .5px;
+  background: var(--glass-strong); border: 1px solid var(--stroke);
+  box-shadow: var(--shadow-card);
+}
+.verdict .dot { width: 8px; height: 8px; border-radius: 50%; }
+.verdict.found .dot { background: var(--culprit); }
+.verdict.combo .dot { background: var(--magenta); }
+.verdict.split .dot { background: var(--active); }
+.verdict b { font-family: var(--display); letter-spacing: 1px; }
+
+/* ============================================================
+   摘要横条 (Summary) — 左:溯源结果  右:测试套统计
+   ============================================================ */
+.summary {
+  grid-area: summary;
+  display: flex; align-items: center; gap: 14px;
+  background: var(--glass); border: 1px solid var(--stroke);
+  border-radius: var(--r-md); padding: 8px 14px;
+  box-shadow: var(--shadow-card);
+}
+.sm-result { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1; }
+.sm-result .sm-tag {
+  font-size: 9px; letter-spacing: 1.5px; color: var(--txt-2);
+  border-right: 1px solid var(--stroke); padding-right: 10px; white-space: nowrap;
+}
+.sm-result .sm-target {
+  font-family: var(--display); font-size: 13px; font-weight: 900;
+  color: var(--fail); letter-spacing: .5px; white-space: nowrap;
+}
+.sm-result .sm-target b { color: var(--txt-0); }
+.sm-result .sm-culprit { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.sm-result .sm-culprit:empty { display: none; }
+.sm-result .sm-culprit .pill {
+  font-family: var(--display); font-weight: 700; letter-spacing: .5px;
+  padding: 2px 9px; border-radius: 20px; font-size: 11px;
+}
+.sm-result .sm-culprit .pill.found { color: var(--culprit); background: #fff7ed; border: 1px solid var(--culprit); }
+.sm-result .sm-culprit .pill.combo { color: var(--magenta); background: rgba(219,39,119,.07); border: 1px solid var(--magenta); }
+.sm-result .sm-culprit .pill.split { color: var(--active); background: rgba(217,119,6,.07); border: 1px solid var(--active); }
+.sm-result .sm-reason {
+  font-size: 11px; color: var(--txt-1); line-height: 1.4;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.sm-stats { display: flex; align-items: center; gap: 7px; flex-shrink: 0; }
+.sm-stats .stat {
+  display: flex; flex-direction: column; align-items: center; gap: 1px;
+  padding: 3px 10px; border-radius: var(--r-sm);
+  background: #f7f9fc; border: 1px solid var(--stroke);
+}
+.sm-stats .stat .k { font-size: 8px; letter-spacing: .5px; color: var(--txt-2); white-space: nowrap; }
+.sm-stats .stat .v { font-family: var(--display); font-weight: 700; font-size: 13px; color: var(--txt-0); }
+.sm-stats .stat .v.accent { color: var(--cyan); }
+
+/* ============================================================
+   时间轴 (Timeline) — N 个测试套全景密集条带
+   ============================================================ */
+.timeline {
+  grid-area: timeline;
+  background: var(--glass); border: 1px solid var(--stroke);
+  border-radius: var(--r-md);
+  padding: 6px 14px 7px;
+  box-shadow: var(--shadow-card);
+}
+.timeline-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 5px;
+}
+.timeline-head .title { font-size: 10px; letter-spacing: 1.5px; color: var(--txt-1); }
+.timeline-head .legend { display: flex; gap: 14px; font-size: 9px; color: var(--txt-2); }
+.timeline-head .legend span { display: inline-flex; align-items: center; gap: 5px; }
+.timeline-head .legend i { width: 9px; height: 9px; border-radius: 3px; display: inline-block; }
+
+.track {
+  position: relative;
+  display: flex; gap: 2px;
+  height: 26px; align-items: flex-end;
+}
+.cell {
+  flex: 1 1 auto; min-width: 0;
+  height: 60%; border-radius: 2px;
+  background: #e9edf4;
+  transition: height .3s ease, background .3s ease, box-shadow .3s ease;
+}
+.cell.in-range { background: var(--cyan); height: 100%; }
+.cell.target  { background: var(--fail); height: 100%; }
+.cell.culprit { background: var(--culprit); height: 100%; }
+.cell.dim     { opacity: .35; }
+
+.track .flag {
+  position: absolute; top: -8px;
+  transform: translateX(-50%);
+  font-size: 9px; letter-spacing: .5px; white-space: nowrap;
+  padding: 2px 6px; border-radius: 4px;
+  background: #fff;
+  pointer-events: none;
+}
+.track .flag.target  { color: var(--fail); border: 1px solid var(--fail); }
+.track .flag.culprit { color: var(--culprit); border: 1px solid var(--culprit); }
+
+.ruler { display: flex; justify-content: space-between; margin-top: 6px; font-size: 9px; color: var(--txt-2); }
+
+/* ============================================================
+   二分搜索树 (Tree) — 核心可视化
+   ============================================================ */
+.tree-wrap {
+  grid-area: tree;
+  position: relative; overflow: hidden;
+  background: var(--glass); border: 1px solid var(--stroke);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-card);
+}
+.tree-wrap .panel-title {
+  position: absolute; top: 10px; left: 14px; z-index: 5;
+  font-size: 10px; letter-spacing: 1.5px; color: var(--txt-1);
+}
+
+/* 缩放工具条：右上角 */
+.zoom-bar {
+  position: absolute; top: 8px; right: 10px; z-index: 6;
+  display: flex; align-items: center; gap: 4px;
+  background: var(--glass-strong); border: 1px solid var(--stroke);
+  border-radius: var(--r-sm); padding: 3px;
+  box-shadow: var(--shadow-card);
+}
+.zoom-bar button {
+  width: 26px; height: 26px; border-radius: 6px;
+  display: grid; place-items: center; cursor: pointer;
+  background: transparent; border: none;
+  color: var(--txt-1); font-size: 15px; line-height: 1;
+  transition: all .15s ease;
+}
+.zoom-bar button:hover { background: #f1f5fb; color: var(--txt-0); }
+.zoom-bar button.fit { font-size: 11px; width: auto; padding: 0 8px; letter-spacing: .5px; }
+.zoom-bar .zlevel {
+  font-family: var(--display); font-size: 10px; font-weight: 700;
+  color: var(--txt-2); min-width: 38px; text-align: center;
+  letter-spacing: .5px; cursor: default;
+}
+
+/* 可滚动的画布容器：树比视口大时可自由拖动浏览，小时自动居中 */
+#tree-scroll {
+  position: absolute; inset: 38px 0 0 0;
+  overflow: auto;
+}
+#tree-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+#tree-scroll::-webkit-scrollbar-thumb { background: var(--stroke-bright); border-radius: 4px; }
+#tree-scroll::-webkit-scrollbar-track { background: transparent; }
+/* tree-stage 承载缩放后的尺寸（撑开滚动条）；tree-content 实际被 scale */
+#tree-stage { position: relative; margin: 0 auto; }
+#tree-content { position: relative; transform-origin: 0 0; }
+#tree-canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.svg-edge { fill: none; stroke-width: 2; }
+.flow-dot { r: 3.2; }
+
+.node {
+  position: absolute; transform: translate(-50%, -50%);
+  width: 112px; cursor: pointer;
+  transition: opacity .4s ease, transform .25s ease;
+}
+.node .card {
+  border-radius: 8px; padding: 5px 8px;
+  background: var(--glass-strong); border: 1.5px solid var(--stroke);
+  box-shadow: var(--shadow-card);
+  transition: all .25s ease;
+}
+.node:hover .card { transform: translateY(-2px); border-color: var(--stroke-bright); }
+.node.sel .card { border-color: var(--cyan); box-shadow: 0 0 0 2px rgba(37,99,235,.18); }
+.node.pass .card { border-left: 3px solid var(--pass); }
+.node.fail .card { border-left: 3px solid var(--fail); }
+.node.hidden { opacity: 0; pointer-events: none; }
+.node.future .card { opacity: .28; filter: grayscale(.6); }
+
+.node .rng { font-family: var(--display); font-size: 11px; font-weight: 700; letter-spacing: .3px; white-space: nowrap; }
+.node .meta { display: flex; justify-content: space-between; align-items: center; gap: 4px; margin-top: 3px; }
+.node .badge {
+  font-size: 8px; font-weight: 700; letter-spacing: .3px; white-space: nowrap;
+  padding: 1px 5px; border-radius: 20px; flex-shrink: 0;
+}
+.node.pass .badge { color: var(--pass); background: rgba(22,163,74,.1); }
+.node.fail .badge { color: var(--fail); background: rgba(225,29,72,.1); }
+.node .count { font-size: 8px; color: var(--txt-2); white-space: nowrap; }
+.node-side { display: none; }
+
+.node.culprit-node .card {
+  border: 1.5px solid var(--culprit);
+  background: #fff7ed;
+  box-shadow: var(--glow-culprit);
+  animation: pulse 2s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%,100% { box-shadow: 0 0 0 0 rgba(234,88,12,.25); }
+  50%     { box-shadow: 0 0 0 6px rgba(234,88,12,.12); }
+}
+
+/* ============================================================
+   详情面板 (Detail)
+   ============================================================ */
+.detail {
+  grid-area: detail; overflow: hidden;
+  display: flex; flex-direction: column;
+  background: var(--glass); border: 1px solid var(--stroke);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-card);
+}
+.detail-head {
+  padding: 14px 16px 12px; border-bottom: 1px solid var(--stroke);
+}
+.detail-head .label { font-size: 10px; letter-spacing: 2px; color: var(--txt-2); }
+.detail-head .range {
+  font-family: var(--display); font-size: 22px; font-weight: 900;
+  margin-top: 4px; letter-spacing: 1px;
+}
+.detail-head .range small { font-size: 12px; color: var(--txt-2); font-weight: 400; letter-spacing: 0; }
+.detail-body { flex: 1; overflow-y: auto; padding: 14px 16px; }
+.detail-body::-webkit-scrollbar { width: 6px; }
+.detail-body::-webkit-scrollbar-thumb { background: var(--stroke-bright); border-radius: 3px; }
+
+.kv { display: flex; justify-content: space-between; padding: 7px 0; border-bottom: 1px dashed var(--stroke); font-size: 12px; }
+.kv .k { color: var(--txt-2); }
+.kv .v { color: var(--txt-0); font-weight: 500; }
+.kv .v.pass { color: var(--pass); } .kv .v.fail { color: var(--fail); }
+
+.section-title { font-size: 10px; letter-spacing: 2px; color: var(--txt-1); margin: 16px 0 8px; }
+
+.suite-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.suite-chips .chip {
+  font-size: 10px; padding: 3px 7px; border-radius: 5px;
+  background: #f1f5fb; border: 1px solid var(--stroke);
+  color: var(--txt-1);
+}
+.suite-chips .chip.t { color: var(--fail); border-color: var(--fail); background: rgba(225,29,72,.07); }
+.suite-chips .more { font-size: 10px; color: var(--txt-2); padding: 3px 4px; }
+
+.logbox {
+  font-size: 11px; line-height: 1.6; color: var(--txt-1);
+  background: #f7f9fc; border: 1px solid var(--stroke);
+  border-radius: var(--r-sm); padding: 10px 12px;
+  white-space: pre-wrap; max-height: 180px; overflow-y: auto;
+}
+.logbox .ln.err { color: var(--fail); }
+.logbox .ln.warn { color: var(--active); }
+.logbox .ln.ok { color: var(--pass); }
+.logbox .ln.dim { color: var(--txt-2); }
+
+.empty-detail { display: grid; place-items: center; height: 100%; color: var(--txt-2); font-size: 12px; text-align: center; padding: 30px; }
+.empty-detail .ico { font-size: 38px; opacity: .4; margin-bottom: 12px; }
+
+/* ============================================================
+   播放控制器 (Controls)
+   ============================================================ */
+.controls {
+  grid-area: controls;
+  display: flex; align-items: center; gap: 18px;
+  background: var(--glass); border: 1px solid var(--stroke);
+  border-radius: var(--r-md); padding: 12px 18px;
+  box-shadow: var(--shadow-card);
+}
+.ctrl-btns { display: flex; gap: 8px; }
+.ctrl-btns button {
+  width: 40px; height: 40px; border-radius: 10px;
+  display: grid; place-items: center; cursor: pointer;
+  background: var(--glass-strong); border: 1px solid var(--stroke);
+  color: var(--txt-0); font-size: 15px; transition: all .2s ease;
+}
+.ctrl-btns button:hover { border-color: var(--stroke-bright); background: #f1f5fb; }
+.ctrl-btns button.play { width: auto; padding: 0 14px; font-size: 12px; letter-spacing: 1px; background: var(--cyan); color: #fff; border-color: transparent; }
+.ctrl-btns button.play:hover { background: #1d4ed8; }
+
+.progress-wrap { flex: 1; min-width: 0; }
+.progress-info { display: flex; justify-content: space-between; font-size: 10px; color: var(--txt-2); margin-bottom: 8px; letter-spacing: 1px; }
+.progress-info b { color: var(--cyan); font-family: var(--display); }
+
+/* 调用序列：每次二分试验一个芯片，按执行顺序排列，可点击聚焦 */
+.seq { display: flex; gap: 5px; overflow-x: auto; padding-bottom: 4px; }
+.seq::-webkit-scrollbar { height: 5px; }
+.seq::-webkit-scrollbar-thumb { background: var(--stroke-bright); border-radius: 3px; }
+.seq .step {
+  flex: 0 0 auto; cursor: pointer;
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 10px; border-radius: 7px;
+  background: var(--glass-strong); border: 1px solid var(--stroke);
+  font-size: 10px; color: var(--txt-1); white-space: nowrap;
+  transition: all .2s ease;
+}
+.seq .step:hover { border-color: var(--stroke-bright); background: #f1f5fb; }
+.seq .step .ix { font-family: var(--display); font-size: 9px; color: var(--txt-2); }
+.seq .step .rg { font-weight: 600; }
+.seq .step .dt { width: 7px; height: 7px; border-radius: 50%; }
+.seq .step.pass .dt { background: var(--pass); }
+.seq .step.fail .dt { background: var(--fail); }
+.seq .step.sel { border-color: var(--cyan); box-shadow: 0 0 0 2px rgba(37,99,235,.15); color: var(--txt-0); background: #eff4ff; }
+.seq .step.culprit { border-color: var(--culprit); background: #fff7ed; }
+
+/* 进入动画 */
+@keyframes nodeIn { from { opacity: 0; transform: translate(-50%, -50%) scale(.7); } to { opacity: 1; transform: translate(-50%,-50%) scale(1); } }
+.node.appearing { animation: nodeIn .45s cubic-bezier(.2,.9,.3,1.3); }
+
+@keyframes flow { to { stroke-dashoffset: -16; } }
+</style>
+</head>
+<body>
+<div id="app">
+  <!-- ===== Header ===== -->
+  <div class="header">
+    <div class="brand">
+      <div class="logo">◈</div>
+      <div>
+        <h1>CONTAMINATION&nbsp;TRACER</h1>
+        <div class="sub">Test Suite Contamination Tracer · Bisection</div>
+      </div>
+    </div>
+    <div class="spacer"></div>
+    <div class="scenario-tabs" id="scenario-tabs"></div>
+    <div class="verdict" id="verdict"><span class="dot"></span><span id="verdict-text">Analyzing…</span></div>
+  </div>
+
+  <!-- ===== Summary 摘要横条 ===== -->
+  <div class="summary">
+    <div class="sm-result">
+      <span class="sm-tag">RESULT</span>
+      <span class="sm-target" id="sm-target">—</span>
+      <span class="sm-culprit" id="sm-culprit"></span>
+      <span class="sm-reason" id="sm-reason">—</span>
+    </div>
+    <div class="sm-stats" id="sm-stats"></div>
+  </div>
+
+  <!-- ===== Timeline ===== -->
+  <div class="timeline">
+    <div class="timeline-head">
+      <div class="title">SUITE TIMELINE <span id="tl-count" style="color:var(--txt-2)"></span></div>
+      <div class="legend">
+        <span><i style="background:#e9edf4"></i>Untouched</span>
+        <span><i style="background:var(--cyan)"></i>Current range</span>
+        <span><i style="background:var(--fail)"></i>Failing target X</span>
+        <span><i style="background:var(--culprit)"></i>Culprit i</span>
+      </div>
+    </div>
+    <div class="track" id="track"></div>
+    <div class="ruler" id="ruler"></div>
+  </div>
+
+  <!-- ===== Tree ===== -->
+  <div class="tree-wrap" id="tree-wrap">
+    <div class="panel-title">BISECTION TREE</div>
+    <!-- 缩放工具条 -->
+    <div class="zoom-bar">
+      <button id="zoom-out" title="Zoom out (Ctrl/⌘ + wheel)">−</button>
+      <span class="zlevel" id="zoom-level">100%</span>
+      <button id="zoom-in" title="Zoom in (Ctrl/⌘ + wheel)">+</button>
+      <button id="zoom-fit" class="fit" title="Fit to window">Fit</button>
+    </div>
+    <div id="tree-scroll">
+      <div id="tree-stage">
+        <div id="tree-content">
+          <svg id="tree-canvas"></svg>
+          <div id="tree-nodes"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Detail ===== -->
+  <div class="detail" id="detail">
+    <div class="empty-detail" id="detail-empty">
+      <div>
+        <div class="ico">◎</div>
+        Click any node to inspect<br/>that trial's details and logs
+      </div>
+    </div>
+    <div id="detail-content" style="display:none;flex-direction:column;height:100%;">
+      <div class="detail-head">
+        <div class="label" id="d-label">TRIAL DETAIL</div>
+        <div class="range" id="d-range"></div>
+      </div>
+      <div class="detail-body" id="d-body"></div>
+    </div>
+  </div>
+
+  <!-- ===== Controls ===== 调用序列导航：默认全展开，点击任一步聚焦 -->
+  <div class="controls">
+    <div class="ctrl-btns">
+      <button id="btn-prev" title="Previous (←)">◀</button>
+      <button id="btn-next" title="Next (→)">▶</button>
+      <button id="btn-replay" class="play" title="Replay from start">↻ Replay</button>
+    </div>
+    <div class="progress-wrap">
+      <div class="progress-info">
+        <span>CALL SEQUENCE · <b id="p-cur">—</b> / <span id="p-total">0</span> trials</span>
+        <span id="p-desc">Click a step below, or a node in the tree</span>
+      </div>
+      <div class="seq" id="seq"></div>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="dist/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+{
+  "name": "contamination-bisection-viz",
+  "version": "1.0.0",
+  "description": "Frontend visualization for test-suite contamination tracing via binary-search / delta-debugging.",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "serve": "python3 -m http.server 8765",
+    "dev": "tsc --watch & python3 -m http.server 8765"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}
