@@ -35,46 +35,67 @@ npm run dev
 
 ```
 .
-├── src/app.ts        # 全部逻辑：数据契约 / mock 层 / 布局 / 渲染 / 缩放 / 事件
+├── src/app.ts        # 全部逻辑：数据契约 / 数据源抽象 / mock 层 / 布局 / 渲染 / 缩放 / 事件
 ├── index.html        # 页面骨架 + 样式，引用 dist/app.js
 ├── dist/             # 编译产物（gitignore，构建生成）
 ├── tsconfig.json     # rootDir=src, outDir=dist, ES2020 module, strict
 └── package.json
 ```
 
-## 运行模式与对接真实后端
+## 数据加载与对接真实系统
 
-`src/app.ts` 顶部有一个模式开关：
+### 设计：数据驱动渲染 + 数据源抽象
+
+界面顶部只有**一个** `⟳ Load Data` 按钮。每次点击，从数据源**轮转**取出下一份数据集并加载；提示只显示中性名称 `Sample Dataset N · k/3`，**刻意不暴露 verdict 类型**。
+
+这是有意为之：前端**不预先知道**将要加载的是哪种结局，完全靠返回数据里的 `session.verdict` 字段**自行判定并渲染**。这验证了展示是真正数据驱动的，而非靠场景名硬编码 —— 因此真实系统只要给出符合契约的数据，前端就能正确呈现。
+
+> 这取代了旧版"三种结局切换标签"的设计。一次真实溯源只会有**一个** verdict，三种结局是互斥的，不应同时出现在切换器里。
+
+### 数据源接口
+
+`src/app.ts` 定义了统一的数据源接口，前端只依赖它，不关心数据来自 mock 还是真实后端：
 
 ```ts
-export const APP_MODE = "demo" as AppMode;   // "demo" | "live"
+interface SessionRef { id: string; label: string; }   // 会话的轻量引用
+
+interface TraceDataSource {
+  list(): Promise<SessionRef[]>;       // 列出可加载的会话
+  fetch(id: string): Promise<Session>; // 按 id 拉取完整会话
+}
 ```
 
-- **demo**（默认）：内置三套互斥的 mock 场景，顶部出现场景切换标签，仅用于展示三种可能的判定结局。
-- **live**：真实部署模式。一次溯源只有**一个**会话、**一个** verdict，场景切换标签自动隐藏，改由 `fetchLiveSession()` 拉取唯一会话。
+内置两个实现：
 
-### 三种判定（互斥结局）
+- `MockDataSource`（默认）：把三套预置样本包装成数据源，用中性标签暴露。
+- `HttpDataSource`：真实后端的 HTTP 对接骨架，约定两个端点：
+  - `GET {baseUrl}/sessions` → `SessionRef[]`
+  - `GET {baseUrl}/sessions/:id` → `Session`
+
+### 对接步骤（唯一改动点）
+
+把 `src/app.ts` 底部的 `DATA_SOURCE` 常量换成你的实现即可，渲染层无需任何改动：
+
+```ts
+// 默认（mock）：
+export const DATA_SOURCE: TraceDataSource = new MockDataSource();
+
+// 上线时改为内置 HTTP 实现：
+export const DATA_SOURCE: TraceDataSource = new HttpDataSource("/api/trace");
+
+// 或完全自定义：实现 TraceDataSource 接口后传入
+export const DATA_SOURCE: TraceDataSource = new MyDataSource();
+```
+
+只要 `fetch(id)` 返回的 JSON 满足下面的 `Session` 契约，前端就能正确渲染。`MockDataSource` 及其引用的 mock 数据层在生产对接后不会被调用，如需彻底剔除可删除"Mock 数据层"注释块。
+
+### 三种判定（互斥结局，由数据决定）
 
 | verdict | 含义 | 二分表现 |
 |---------|------|----------|
 | `found` | 单一污染源 | 逐层收敛，最终锁定 `suite #i`（区间收敛到 `[i-i]`） |
 | `combo` | 多个独立污染源 | 某次二分两半各自单独即可复现失败，停止 |
 | `split` | 需两套共存才触发 | 某次二分两半单独都通过（恰好把它们劈开），停止 |
-
-### 对接步骤
-
-1. 把 `APP_MODE` 改为 `"live"`。
-2. 实现 `fetchLiveSession()`（已给出默认骨架，改成你的接口即可）：
-
-```ts
-export async function fetchLiveSession(): Promise<Session> {
-  const res = await fetch("/api/trace/latest");
-  if (!res.ok) throw new Error(`fetchLiveSession failed: HTTP ${res.status}`);
-  return (await res.json()) as Session;
-}
-```
-
-只要后端返回的 JSON 满足 `Session` 契约（见 `src/app.ts` 顶部 “Data Contract” 段），前端无需任何其它改动。`dist/` 整段 mock 数据层在 live 模式下不会被调用，如需彻底剔除可删除 “Mock 数据层” 注释块。
 
 ## 数据契约（Session）
 
@@ -95,6 +116,7 @@ interface Session {
 
 ## 交互
 
+- 顶部 `⟳ Load Data`：轮转加载下一份数据集，前端按其 verdict 自动呈现对应结局。
 - 点击树节点 / 底部序列芯片：查看该次试验详情，画布自动居中。
 - 方向键 ← / →：按执行顺序前后切换。
 - 缩放：右上角 +/−/Fit 按钮，或 `Ctrl/⌘ + 滚轮`（以鼠标为中心），或 `Ctrl/⌘ + +/-/0`。
@@ -102,14 +124,16 @@ interface Session {
 
 ## 测试
 
-源码做了浏览器环境守卫（`typeof document !== "undefined"`），可在 Node 下作为纯逻辑模块导入做冒烟测试：
+源码做了浏览器环境守卫（`typeof document !== "undefined"`），可在 Node 下作为纯逻辑模块导入做冒烟测试。下面遍历 `MockDataSource` 列出的所有数据集，打印各自由数据驱动产出的 verdict：
 
 ```bash
 npm run build
 node --input-type=module -e '
-import { SCENARIOS } from "./dist/app.js";
-for (const [k, def] of Object.entries(SCENARIOS)) {
-  const s = def.build();
-  console.log(k, s.trials.length, s.verdict, [s.converged.a, s.converged.b]);
+import { MockDataSource } from "./dist/app.js";
+const ds = new MockDataSource();
+for (const ref of await ds.list()) {
+  const s = await ds.fetch(ref.id);
+  console.log(ref.label, "| trials=" + s.trials.length, "| verdict=" + s.verdict, "| converged=[" + s.converged.a + "-" + s.converged.b + "]");
 }'
 ```
+

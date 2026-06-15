@@ -4,7 +4,7 @@
  * 把后端「对失败目标 X 反复二分 [0..X-1] 前缀以逼近污染源」的调用记录，
  * 可视化为一棵二分搜索树。本文件是纯前端逻辑层（无框架依赖）。
  *
- * 对接真实后端：只需替换 `fetchSession`，让它返回符合 `Session` 契约的数据。
+ * 对接真实后端：实现 `TraceDataSource` 接口并替换 `DATA_SOURCE` 即可，渲染层无需改动。
  */
 
 /* ============================================================
@@ -181,54 +181,92 @@ function scenarioSplit(): Session {
   });
 }
 
-export type ScenarioKey = "found" | "combo" | "split";
-
-interface ScenarioDef {
-  label: string;
-  build: () => Session;
-}
-
-export const SCENARIOS: Record<ScenarioKey, ScenarioDef> = {
-  found: { label: "✦ Located", build: scenarioFound },
-  combo: { label: "⚇ Multi-source", build: scenarioCombo },
-  split: { label: "⚡ Co-existence", build: scenarioSplit },
-};
-
-/**
- * 拉取一个内置 mock 场景（仅 demo 模式使用）。
- */
-export async function fetchSession(key: ScenarioKey): Promise<Session> {
-  return SCENARIOS[key].build();
-}
-
 /* ============================================================
- * 运行模式 (Run Mode)
+ * 数据源抽象 (Data Source)
  * ------------------------------------------------------------
- * demo —— 内置三套 mock 场景，顶部出现场景切换标签，仅用于展示。
- * live —— 对接真实后端：一次溯源只有一个会话、一个 verdict，
- *         隐藏场景标签，改由 fetchLiveSession() 拉取唯一会话。
- * 真实部署时把下面这行改为 "live"，并实现 fetchLiveSession 即可。
+ * 前端只依赖 `TraceDataSource` 这个接口，不关心数据来自内置 mock
+ * 还是真实后端。这样对接真实系统时，只需实现该接口、并把页面底部的
+ * `DATA_SOURCE` 常量换成你的实现即可，渲染层无需任何改动。
+ *
+ * 关键设计：前端【不预先知道】将要加载的是哪种 verdict，完全靠
+ * 返回数据里的 `session.verdict` 字段自行判定并渲染。这正是用「一个
+ * 加载按钮 + 中性标签」替代「三种场景切换标签」的目的——验证前端
+ * 的展示是真正数据驱动的，而非靠场景名硬编码。
  * ============================================================ */
-export type AppMode = "demo" | "live";
-export const APP_MODE = "demo" as AppMode;
+
+/** 一个溯源会话的轻量引用：用于列举可加载的数据，不含完整 trials */
+export interface SessionRef {
+  id: string;       // 会话唯一标识
+  label: string;    // 列表中展示的中性名称（刻意不暴露 verdict 类型）
+}
+
+/** 溯源数据源接口：对接真实系统时实现它即可 */
+export interface TraceDataSource {
+  /** 列出所有可加载的会话（轻量引用） */
+  list(): Promise<SessionRef[]>;
+  /** 按 id 拉取一个完整会话（满足 `Session` 契约） */
+  fetch(id: string): Promise<Session>;
+}
 
 /**
- * 拉取真实后端的唯一溯源会话（live 模式）。这是对接真实 API 的唯一改动点：
- *   const res = await fetch("/api/trace/latest");
- *   return await res.json() as Session;
- * 只要返回的 JSON 满足 `Session` 契约，前端无需任何其它改动。
+ * 内置 mock 数据源：把三套预置场景包装成统一的数据源。
+ * 标签刻意只用中性的「Sample Dataset N」，不写明 verdict 类型。
  */
-export async function fetchLiveSession(): Promise<Session> {
-  const res = await fetch("/api/trace/latest");
-  if (!res.ok) throw new Error(`fetchLiveSession failed: HTTP ${res.status}`);
-  return (await res.json()) as Session;
+export class MockDataSource implements TraceDataSource {
+  private readonly samples: { ref: SessionRef; build: () => Session }[] = [
+    { ref: { id: "sample-1", label: "Sample Dataset 1" }, build: scenarioFound },
+    { ref: { id: "sample-2", label: "Sample Dataset 2" }, build: scenarioCombo },
+    { ref: { id: "sample-3", label: "Sample Dataset 3" }, build: scenarioSplit },
+  ];
+
+  async list(): Promise<SessionRef[]> {
+    return this.samples.map(s => s.ref);
+  }
+
+  async fetch(id: string): Promise<Session> {
+    const hit = this.samples.find(s => s.ref.id === id);
+    if (!hit) throw new Error(`MockDataSource: unknown session id "${id}"`);
+    return hit.build();
+  }
 }
+
+/**
+ * 真实后端数据源（HTTP 实现示例 / 对接骨架）。
+ * 约定两个端点（按需改成你们的真实路由）：
+ *   GET {baseUrl}/sessions        → SessionRef[]   列出可加载会话
+ *   GET {baseUrl}/sessions/:id    → Session        拉取单个完整会话
+ * 只要响应 JSON 满足上述契约，把 `DATA_SOURCE` 换成本类的实例即可上线。
+ */
+export class HttpDataSource implements TraceDataSource {
+  constructor(private readonly baseUrl: string = "/api/trace") {}
+
+  async list(): Promise<SessionRef[]> {
+    const res = await fetch(`${this.baseUrl}/sessions`);
+    if (!res.ok) throw new Error(`HttpDataSource.list failed: HTTP ${res.status}`);
+    return (await res.json()) as SessionRef[];
+  }
+
+  async fetch(id: string): Promise<Session> {
+    const res = await fetch(`${this.baseUrl}/sessions/${encodeURIComponent(id)}`);
+    if (!res.ok) throw new Error(`HttpDataSource.fetch failed: HTTP ${res.status}`);
+    return (await res.json()) as Session;
+  }
+}
+
+/**
+ * 当前生效的数据源 —— 这是对接真实系统的【唯一改动点】。
+ * 默认使用内置 mock；上线时改成：
+ *   export const DATA_SOURCE: TraceDataSource = new HttpDataSource("/api/trace");
+ */
+export const DATA_SOURCE: TraceDataSource = new MockDataSource();
 
 /* ============================================================
  * 全局状态
  * ============================================================ */
 interface AppState {
-  key: ScenarioKey;
+  refs: SessionRef[];             // 数据源列出的可加载会话
+  cursor: number;                 // 下一个要加载的会话在 refs 中的下标（轮转）
+  loadedRef: SessionRef | null;   // 当前已加载的会话引用（用于提示展示）
   session: Session | null;
   selected: number | null;        // 当前选中的 trial id
   reveal: number | null;          // null=全展开；动画回放时为已显示数量
@@ -237,7 +275,9 @@ interface AppState {
 }
 
 const State: AppState = {
-  key: "found",
+  refs: [],
+  cursor: 0,
+  loadedRef: null,
   session: null,
   selected: null,
   reveal: null,
@@ -288,23 +328,21 @@ const $ = <T extends HTMLElement = HTMLElement>(sel: string): T =>
 
 const SVGNS = "http://www.w3.org/2000/svg";
 
-/** 当前会话（断言非空，渲染函数仅在 loadScenario 后调用） */
+/** 当前会话（断言非空，渲染函数仅在 applySession 后调用） */
 function sess(): Session {
   return State.session!;
 }
 
-function renderScenarioTabs(): void {
-  const box = $("#scenario-tabs");
-  box.innerHTML = "";
-  // live 模式只有唯一会话，无需场景切换标签
-  if (APP_MODE === "live") { box.style.display = "none"; return; }
-  (Object.entries(SCENARIOS) as [ScenarioKey, ScenarioDef][]).forEach(([k, v]) => {
-    const b = document.createElement("button");
-    b.textContent = v.label;
-    b.className = k === State.key ? "active" : "";
-    b.onclick = () => void loadScenario(k);
-    box.appendChild(b);
-  });
+/** 加载器提示：展示当前已加载的数据集名称与轮转进度（刻意不暴露 verdict） */
+function renderLoader(): void {
+  const hint = $("#loader-hint");
+  if (!hint) return;
+  if (State.loadedRef && State.refs.length) {
+    const idx = State.refs.findIndex(r => r.id === State.loadedRef!.id);
+    hint.textContent = `${State.loadedRef.label} · ${idx + 1}/${State.refs.length}`;
+  } else {
+    hint.textContent = "No data loaded";
+  }
 }
 
 function renderVerdict(): void {
@@ -521,7 +559,7 @@ function renderControls(): void {
 
 /** 整页渲染 */
 function renderAll(): void {
-  renderScenarioTabs();
+  renderLoader();
   renderVerdict();
   renderInfoCards();
   renderTimeline();
@@ -615,15 +653,21 @@ function applySession(session: Session): void {
   requestAnimationFrame(() => selectTrial(session.converged.id));
 }
 
-/** 加载内置 mock 场景（demo 模式） */
-async function loadScenario(key: ScenarioKey): Promise<void> {
-  State.key = key;
-  applySession(await fetchSession(key));
+/** 加载下一份数据：从数据源轮转取一个会话并装载（核心入口，按钮点击触发） */
+async function loadNext(): Promise<void> {
+  if (!State.refs.length) return;
+  const ref = State.refs[State.cursor % State.refs.length];
+  State.cursor = (State.cursor + 1) % State.refs.length;
+  const session = await DATA_SOURCE.fetch(ref.id);
+  State.loadedRef = ref;
+  applySession(session);
 }
 
-/** 加载真实后端的唯一会话（live 模式） */
-async function loadLive(): Promise<void> {
-  applySession(await fetchLiveSession());
+/** 初始化：向数据源拉取可加载列表，并加载第一份 */
+async function init(): Promise<void> {
+  State.refs = await DATA_SOURCE.list();
+  State.cursor = 0;
+  await loadNext();
 }
 
 /* ============================================================
@@ -636,6 +680,21 @@ function bindEvents(): void {
   if (next) next.onclick = () => navSel(1);
   if (prev) prev.onclick = () => navSel(-1);
   if (rep) rep.onclick = () => replay();
+
+  // 加载数据按钮：轮转加载下一份数据集，加载期间禁用防止重入
+  const loadBtn = $<HTMLButtonElement>("#btn-load");
+  if (loadBtn) {
+    loadBtn.onclick = async () => {
+      loadBtn.disabled = true;
+      try {
+        await loadNext();
+      } catch (err) {
+        console.error("[trace] load data failed:", err);
+      } finally {
+        loadBtn.disabled = false;
+      }
+    };
+  }
 
   // 缩放按钮
   const zin = $<HTMLButtonElement>("#zoom-in");
@@ -670,10 +729,6 @@ function bindEvents(): void {
 // 仅在浏览器环境自动启动（便于在 Node 下作为纯逻辑模块导入测试）
 if (typeof document !== "undefined") {
   bindEvents();
-  // demo：加载首个 mock 场景；live：拉取后端唯一会话（失败时打印到控制台）
-  if (APP_MODE === "live") {
-    void loadLive().catch(err => console.error("[trace] load live session failed:", err));
-  } else {
-    void loadScenario("found");
-  }
+  // 拉取数据源列表并加载第一份；失败打印到控制台
+  void init().catch(err => console.error("[trace] init failed:", err));
 }

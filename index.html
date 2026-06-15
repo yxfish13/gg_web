@@ -106,19 +106,20 @@ body::before {
 
 .header .spacer { flex: 1; }
 
-.scenario-tabs { display: flex; gap: 6px; }
-.scenario-tabs button {
-  font-family: var(--mono); font-size: 11px; letter-spacing: .5px;
-  color: var(--txt-1); cursor: pointer;
-  padding: 6px 12px; border-radius: var(--r-sm);
-  background: var(--glass); border: 1px solid var(--stroke);
+.loader { display: flex; align-items: center; gap: 10px; }
+.loader button {
+  font-family: var(--mono); font-size: 11px; letter-spacing: .5px; font-weight: 700;
+  color: #fff; cursor: pointer;
+  padding: 6px 14px; border-radius: var(--r-sm);
+  background: var(--cyan); border: 1px solid transparent;
   transition: all .25s ease;
 }
-.scenario-tabs button:hover { color: var(--txt-0); border-color: var(--stroke-bright); }
-.scenario-tabs button.active {
-  color: #fff; font-weight: 700;
-  background: var(--cyan);
-  border-color: transparent;
+.loader button:hover { filter: brightness(1.06); }
+.loader button:active { transform: translateY(1px); }
+.loader button:disabled { opacity: .55; cursor: progress; }
+.loader-hint {
+  font-family: var(--mono); font-size: 10px; letter-spacing: .5px;
+  color: var(--txt-2); white-space: nowrap;
 }
 
 /* 结论徽章 */
@@ -438,7 +439,10 @@ body::before {
       </div>
     </div>
     <div class="spacer"></div>
-    <div class="scenario-tabs" id="scenario-tabs"></div>
+    <div class="loader" id="loader">
+      <button id="btn-load" title="Load the next dataset">⟳ Load Data</button>
+      <span class="loader-hint" id="loader-hint">No data loaded</span>
+    </div>
     <div class="verdict" id="verdict"><span class="dot"></span><span id="verdict-text">Analyzing…</span></div>
   </div>
 
